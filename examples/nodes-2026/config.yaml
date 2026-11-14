@@ -1,0 +1,272 @@
+# GraphKG Agent — Project Configuration
+# Edit this file to configure the framework for your own dataset.
+# See examples/ for working configurations.
+
+project:
+  name: "nodes-2026"
+  display_name: "NODES 2026 Conference Explorer"
+  description: "Explore sessions, speakers, topics, and schedule from the NODES 2026 conference"
+  icon: "🎯"
+
+# ── Data Sources ──────────────────────────────────────────────
+data:
+  directory: examples/nodes-2026/data
+  separator: ";"                 # list separator inside CSV fields
+
+  files:
+    sessions:
+      file: sessions.csv
+      node_label: Session
+      id_field: id
+      properties: [title, description, levels, formats]
+      list_fields: [levels, formats]
+
+    speakers:
+      file: speakers.csv
+      node_label: Speaker
+      id_field: id
+      properties: [name]
+
+    slots:
+      file: slots.csv
+      node_label: Slot
+      id_field: id
+      properties: [startTime, endTime, durationMinutes, displayTime]
+
+    chunks:
+      file: chunks.csv
+      node_label: SessionChunk
+      extra_labels: [Chunk]
+      id_field: id
+      properties: [text, index, embedding]
+      embedding_field: embedding
+      embedding_separator: ";"
+
+    entities:
+      file: entities.csv
+      node_label: __Entity__     # label determined by 'label' column
+      id_field: id
+      properties: [name]
+      dynamic_label_field: label  # Technology, Concept, Organization, Domain
+
+  relationships:
+    - file: presents.csv
+      type: PRESENTS
+      from_label: Speaker
+      from_field: speaker_id
+      to_label: Session
+      to_field: session_id
+
+    - type: HAS_SLOT
+      inline: true               # defined inside sessions.csv via slot_id
+      from_label: Session
+      to_label: Slot
+
+    - type: IN_TRACK
+      inline: true
+      from_label: Session
+      to_label: Track
+
+    - type: HAS_TOPIC
+      inline: true
+      from_label: Session
+      to_label: Topic
+
+    - type: HAS_USE_CASE
+      inline: true
+      from_label: Session
+      to_label: UseCase
+
+    - file: mentions.csv
+      type: MENTIONS
+      from_label: Session
+      from_field: session_id
+      to_label: __Entity__
+      to_field: entity_id
+
+    - file: entity_relationships.csv
+      type: __dynamic__           # type from 'type' column (USES, OPERATES_IN)
+      from_field: source_id
+      to_field: target_id
+
+# ── Schema (for display & agent) ─────────────────────────────
+schema:
+  nodes:
+    - label: Session
+      display_property: title
+      color: "#4C8BF5"
+      icon: "🎤"
+      description: "A conference talk or workshop"
+
+    - label: Speaker
+      display_property: name
+      color: "#FF6B6B"
+      icon: "👤"
+      description: "A session presenter"
+
+    - label: Track
+      display_property: name
+      color: "#4ECDC4"
+      icon: "🏷️"
+      description: "Conference track/category"
+
+    - label: Topic
+      display_property: name
+      color: "#45B7D1"
+      icon: "📌"
+      description: "Session topic tag"
+
+    - label: UseCase
+      display_property: name
+      color: "#96CEB4"
+      icon: "💡"
+      description: "Use case category"
+
+    - label: Slot
+      display_property: displayTime
+      color: "#FFEAA7"
+      icon: "🕐"
+      description: "Scheduled time slot"
+
+    - label: Technology
+      display_property: name
+      color: "#DDA0DD"
+      icon: "⚙️"
+      description: "Software, framework, or platform"
+
+    - label: Concept
+      display_property: name
+      color: "#F0E68C"
+      icon: "🧠"
+      description: "Technique or method"
+
+    - label: Organization
+      display_property: name
+      color: "#FFA07A"
+      icon: "🏢"
+      description: "Company or institution"
+
+    - label: Domain
+      display_property: name
+      color: "#98D8C8"
+      icon: "🌐"
+      description: "Industry or field"
+
+  relationships:
+    - type: PRESENTS
+      from: Speaker
+      to: Session
+      description: "Speaker presents a session"
+
+    - type: HAS_SLOT
+      from: Session
+      to: Slot
+      description: "Session is scheduled at this time"
+
+    - type: IN_TRACK
+      from: Session
+      to: Track
+      description: "Session belongs to this track"
+
+    - type: HAS_TOPIC
+      from: Session
+      to: Topic
+      description: "Session covers this topic"
+
+    - type: HAS_USE_CASE
+      from: Session
+      to: UseCase
+      description: "Session demonstrates this use case"
+
+    - type: MENTIONS
+      from: Session
+      to: "*"
+      description: "Session mentions this entity"
+
+    - type: USES
+      from: Organization
+      to: Technology
+      description: "Organization uses this technology"
+
+    - type: OPERATES_IN
+      from: Organization
+      to: Domain
+      description: "Organization works in this domain"
+
+# ── Agent Configuration ───────────────────────────────────────
+agent:
+  system_prompt: |
+    You are a helpful guide to the NODES 2026 conference.
+    Answer using only the graph. Always include session titles,
+    speakers, and times when relevant. Write times exactly as the
+    tools return them, like "Wed 11 Nov, 18:00 UTC".
+    If the graph doesn't contain the answer, say so.
+
+  tools:
+    - type: text2cypher
+      name: ask-graph
+      description: >
+        Answer questions about the knowledge graph by generating Cypher.
+        Graph schema: (:Speaker)-[:PRESENTS]->(:Session)-[:HAS_SLOT]->(:Slot),
+        (:Session)-[:IN_TRACK]->(:Track), (:Session)-[:HAS_TOPIC]->(:Topic),
+        (:Session)-[:HAS_USE_CASE]->(:UseCase),
+        (:Session)-[:MENTIONS]->(:Technology|Concept|Organization|Domain).
+
+    - type: cypher_template
+      name: search-by-speaker
+      description: "Find sessions by speaker name (fuzzy matching)"
+      template: >
+        MATCH (sp:Speaker)
+        WHERE toLower(sp.name) CONTAINS toLower($name)
+        MATCH (sp)-[:PRESENTS]->(s:Session)
+        OPTIONAL MATCH (s)-[:HAS_SLOT]->(sl:Slot)
+        WITH sp, s, sl ORDER BY sl.startTime
+        WITH sp, s, collect(sl.displayTime) AS times
+        RETURN sp.name AS speaker, s.title AS title, times
+        ORDER BY speaker, title LIMIT 25
+      parameters:
+        - name: name
+          type: string
+          description: "Speaker name or part of it"
+
+    - type: cypher_template
+      name: search-by-topic
+      description: "Find sessions by topic, technology, or concept"
+      template: >
+        MATCH (s:Session)-[:HAS_TOPIC|HAS_USE_CASE|MENTIONS]->(x)
+        WHERE toLower(x.name) CONTAINS toLower($name)
+        WITH DISTINCT s
+        OPTIONAL MATCH (s)<-[:PRESENTS]-(sp:Speaker)
+        OPTIONAL MATCH (s)-[:HAS_SLOT]->(sl:Slot)
+        WITH s, sp, sl ORDER BY sl.startTime
+        WITH s, collect(DISTINCT sp.name) AS speakers,
+             collect(DISTINCT sl.displayTime) AS times,
+             min(sl.startTime) AS first
+        RETURN s.title AS title, speakers, times
+        ORDER BY first LIMIT 25
+      parameters:
+        - name: name
+          type: string
+          description: "Topic, technology, or concept name"
+
+    - type: similarity_search
+      name: find-similar
+      description: "Semantic search over session descriptions"
+      index: session_chunk_embeddings
+      provider: openai
+      model: text-embedding-3-small
+      top_k: 5
+
+# ── AI Settings ───────────────────────────────────────────────
+ai:
+  llm_provider: openai
+  llm_model: gpt-4o-mini
+  embedding_provider: openai
+  embedding_model: text-embedding-3-small
+  embedding_dimensions: 1536
+
+# ── Database ──────────────────────────────────────────────────
+database:
+  provider: relate               # "relate" (local, in-memory) or "neo4j" (remote)
+  # For neo4j, set these env vars: NEO4J_URI, NEO4J_USERNAME, NEO4J_PASSWORD
+
